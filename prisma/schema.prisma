@@ -1,0 +1,859 @@
+// ============================================================================
+//  Revio — Peer-to-peer electronics rental marketplace
+//  Prisma schema  (PostgreSQL)
+//
+//  Money is always stored as integer minor units (cents) + an ISO currency
+//  code. Never use floats for money. Timestamps are UTC. IDs are cuids.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+//  Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  USER
+  SUPPORT
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+enum Condition {
+  NEW
+  LIKE_NEW
+  EXCELLENT
+  GOOD
+  FAIR
+}
+
+enum ListingStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  REMOVED
+}
+
+enum RateUnit {
+  DAY
+  WEEK
+  MONTH
+}
+
+enum DeliveryMethod {
+  PICKUP
+  DELIVERY
+}
+
+enum AvailabilityType {
+  AVAILABLE
+  BLOCKED
+  BOOKED
+}
+
+enum BookingStatus {
+  PENDING // created, awaiting payment
+  CONFIRMED // paid, funds held in escrow, not yet started
+  ACTIVE // item handed over (checkout condition report done)
+  AWAITING_RETURN // rental window ended, return not yet confirmed
+  COMPLETED // returned, deposit released, payout sent
+  CANCELLED
+  DISPUTED
+}
+
+enum PaymentStatus {
+  REQUIRES_PAYMENT
+  PROCESSING
+  HELD_IN_ESCROW
+  RELEASED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  FAILED
+}
+
+enum DepositStatus {
+  PENDING
+  HELD
+  RELEASED
+  PARTIALLY_CAPTURED
+  CAPTURED
+  REFUNDED
+}
+
+enum PayoutStatus {
+  PENDING
+  IN_TRANSIT
+  PAID
+  FAILED
+}
+
+enum LedgerType {
+  RENT_CHARGE
+  DELIVERY_FEE
+  TAX
+  PLATFORM_FEE
+  DEPOSIT_HOLD
+  DEPOSIT_CAPTURE
+  DEPOSIT_REFUND
+  PAYOUT
+  REFUND
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+enum ConditionPhase {
+  CHECKOUT
+  RETURN
+}
+
+enum PartyRole {
+  OWNER
+  RENTER
+}
+
+enum MediaLabel {
+  FRONT
+  BACK
+  LEFT
+  RIGHT
+  TOP
+  BOTTOM
+  ACCESSORIES
+  SERIAL
+  OTHER
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
+enum ReviewDirection {
+  RENTER_TO_OWNER
+  OWNER_TO_RENTER
+}
+
+enum IdVerificationStatus {
+  NOT_STARTED
+  PENDING
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum IdDocumentType {
+  PASSPORT
+  DRIVING_LICENCE
+  NATIONAL_ID
+}
+
+enum FileKind {
+  LISTING_IMAGE
+  ID_DOCUMENT
+  SELFIE
+  ADDRESS_PROOF
+  CONDITION_MEDIA
+  MESSAGE_ATTACHMENT
+  AGREEMENT_PDF
+  OTHER
+}
+
+enum NotificationType {
+  BOOKING_REQUESTED
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  PAYMENT_RECEIVED
+  PAYOUT_SENT
+  MESSAGE_RECEIVED
+  RETURN_DUE
+  RETURN_CONFIRMED
+  REVIEW_RECEIVED
+  IDENTITY_VERIFIED
+  IDENTITY_REJECTED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+  PRICE_DROP
+  BACK_IN_STOCK
+}
+
+enum DisputeReason {
+  DAMAGE
+  LATE_RETURN
+  MISSING_ACCESSORIES
+  FRAUD
+  NON_DELIVERY
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum DisputeResolution {
+  REFUND_FULL
+  REFUND_PARTIAL
+  CHARGE_DEPOSIT
+  SPLIT
+  NO_ACTION
+}
+
+// ---------------------------------------------------------------------------
+//  Auth (NextAuth / Auth.js adapter models) + User
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String     @id @default(cuid())
+  email          String     @unique
+  emailVerified  DateTime?
+  hashedPassword String? // null for OAuth-only accounts
+  name           String?
+  image          String?
+  phone          String?
+  phoneVerified  Boolean    @default(false)
+  role           UserRole   @default(USER)
+  status         UserStatus @default(ACTIVE)
+
+  // Stripe
+  stripeCustomerId       String? @unique
+  stripeConnectAccountId String? @unique
+  stripeConnectOnboarded Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Auth relations
+  accounts Account[]
+  sessions Session[]
+
+  // Domain relations
+  profile              Profile?
+  identityVerification IdentityVerification?
+  listings             Listing[]             @relation("ListingOwner")
+  bookingsAsRenter     Booking[]             @relation("BookingRenter")
+  bookingsAsOwner      Booking[]             @relation("BookingOwner")
+  reviewsAuthored      Review[]              @relation("ReviewAuthor")
+  reviewsReceived      Review[]              @relation("ReviewSubject")
+  threadParticipants   ThreadParticipant[]
+  messagesSent         Message[]
+  notifications        Notification[]
+  wishlistItems        WishlistItem[]
+  uploadedFiles        UploadedFile[]
+  payouts              Payout[]
+  ledgerEntries        LedgerEntry[]
+  disputesRaised       Dispute[]             @relation("DisputeRaiser")
+  disputeEvidence      DisputeEvidence[]
+  conditionReports     ConditionReport[]
+  auditLogs            AuditLog[]
+
+  @@index([status])
+  @@index([role])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+//  Profile
+// ---------------------------------------------------------------------------
+
+model Profile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  displayName String
+  bio         String? @db.Text
+  avatarUrl   String?
+
+  // Location (approximate; exact address only revealed after booking)
+  city      String?
+  country   String?
+  latitude  Float?
+  longitude Float?
+
+  // Trust badges (denormalised for fast querying/filtering)
+  identityVerified Boolean @default(false)
+  addressVerified  Boolean @default(false)
+  trustedLender    Boolean @default(false)
+
+  // Reputation (kept in sync when reviews are written)
+  ratingAvg        Float @default(0)
+  ratingCount      Int   @default(0)
+  completedRentals Int   @default(0)
+  responseTimeMins Int? // rolling average, null until enough data
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([city])
+  @@index([identityVerified])
+}
+
+// ---------------------------------------------------------------------------
+//  Catalogue: Category + Listing + Images + Availability
+// ---------------------------------------------------------------------------
+
+model Category {
+  id       String     @id @default(cuid())
+  slug     String     @unique
+  name     String
+  iconKey  String? // maps to an icon in the UI
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  order    Int        @default(0)
+
+  listings Listing[]
+
+  @@index([parentId])
+}
+
+model Listing {
+  id         String   @id @default(cuid())
+  slug       String   @unique
+  ownerId    String
+  owner      User     @relation("ListingOwner", fields: [ownerId], references: [id])
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  title       String
+  description String    @db.Text
+  brand       String?
+  model       String?
+  condition   Condition
+  specs       Json? // { "Sensor": "24MP", "Weight": "650g", ... }
+  accessories String[] // included items
+  rules       String[] // usage rules shown to renter
+
+  // Pricing (minor units)
+  currency          String @default("GBP")
+  priceDailyCents   Int
+  priceWeeklyCents  Int?
+  priceMonthlyCents Int?
+  depositCents      Int    @default(0)
+
+  // Fulfilment
+  collectionAvailable Boolean @default(true)
+  deliveryAvailable   Boolean @default(false)
+  deliveryFeeCents    Int?
+  deliveryRadiusKm    Int?
+  instantBook         Boolean @default(false)
+
+  // Location
+  city      String?
+  country   String?
+  latitude  Float?
+  longitude Float?
+
+  status     ListingStatus @default(DRAFT)
+  viewsCount Int           @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  images        ListingImage[]
+  availability  AvailabilityBlock[]
+  bookings      Booking[]
+  reviews       Review[]
+  wishlistItems WishlistItem[]
+  threads       MessageThread[]
+
+  @@index([ownerId])
+  @@index([categoryId])
+  @@index([status])
+  @@index([city])
+  @@index([latitude, longitude])
+}
+
+model ListingImage {
+  id        String  @id @default(cuid())
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  url       String
+  width     Int?
+  height    Int?
+  order     Int     @default(0)
+  isCover   Boolean @default(false)
+
+  @@index([listingId])
+}
+
+/// Blocks of dates. A confirmed booking creates a BOOKED block; owners can add
+/// BLOCKED ranges manually. Overlap checks happen in the booking service.
+model AvailabilityBlock {
+  id        String           @id @default(cuid())
+  listingId String
+  listing   Listing          @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  startDate DateTime         @db.Date
+  endDate   DateTime         @db.Date
+  type      AvailabilityType @default(BLOCKED)
+  bookingId String?          @unique
+  booking   Booking?         @relation(fields: [bookingId], references: [id])
+
+  @@index([listingId, startDate, endDate])
+}
+
+// ---------------------------------------------------------------------------
+//  Bookings + Money
+// ---------------------------------------------------------------------------
+
+model Booking {
+  id        String  @id @default(cuid())
+  code      String  @unique // human-friendly ref, e.g. GL-8F3K2Q
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id])
+  renterId  String
+  renter    User    @relation("BookingRenter", fields: [renterId], references: [id])
+  ownerId   String // denormalised from listing for fast owner queries
+  owner     User    @relation("BookingOwner", fields: [ownerId], references: [id])
+
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+
+  // Price snapshot at time of booking (never trust the live listing later)
+  unitType            RateUnit
+  unitCount           Int
+  rentalSubtotalCents Int
+  depositCents        Int
+  platformFeeCents    Int
+  deliveryFeeCents    Int      @default(0)
+  taxCents            Int      @default(0)
+  totalCents          Int
+  currency            String   @default("GBP")
+
+  deliveryMethod DeliveryMethod @default(PICKUP)
+  status         BookingStatus  @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payment              Payment?
+  deposit              Deposit?
+  availabilityHold     AvailabilityBlock?
+  conditionReports     ConditionReport[]
+  conditionComparisons ConditionComparison[]
+  reviews              Review[]
+  dispute              Dispute?
+  rentalAgreement      RentalAgreement?
+  thread               MessageThread?
+  ledgerEntries        LedgerEntry[]
+
+  @@index([renterId])
+  @@index([ownerId])
+  @@index([listingId])
+  @@index([status])
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  bookingId             String        @unique
+  booking               Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  stripePaymentIntentId String?       @unique
+  amountCents           Int
+  currency              String        @default("GBP")
+  status                PaymentStatus @default(REQUIRES_PAYMENT)
+  capturedAt            DateTime?
+  releasedAt            DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Deposit {
+  id                    String        @id @default(cuid())
+  bookingId             String        @unique
+  booking               Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  stripePaymentIntentId String?       @unique // manual-capture PI used as the hold
+  amountCents           Int
+  capturedCents         Int           @default(0)
+  currency              String        @default("GBP")
+  status                DepositStatus @default(PENDING)
+  heldAt                DateTime?
+  releasedAt            DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payout {
+  id               String       @id @default(cuid())
+  ownerId          String
+  owner            User         @relation(fields: [ownerId], references: [id])
+  bookingId        String?
+  stripeTransferId String?      @unique
+  amountCents      Int
+  currency         String       @default("GBP")
+  status           PayoutStatus @default(PENDING)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@index([ownerId])
+}
+
+/// Immutable money ledger — one row per movement. Enables reconciliation,
+/// receipts, and analytics without recomputing from Stripe.
+model LedgerEntry {
+  id          String          @id @default(cuid())
+  bookingId   String?
+  booking     Booking?        @relation(fields: [bookingId], references: [id])
+  userId      String?
+  user        User?           @relation(fields: [userId], references: [id])
+  type        LedgerType
+  direction   LedgerDirection
+  amountCents Int
+  currency    String          @default("GBP")
+  stripeRef   String?
+  meta        Json?
+  createdAt   DateTime        @default(now())
+
+  @@index([bookingId])
+  @@index([userId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+//  Condition verification (before & after) — the trust core
+// ---------------------------------------------------------------------------
+
+model ConditionReport {
+  id            String         @id @default(cuid())
+  bookingId     String
+  booking       Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  phase         ConditionPhase
+  submittedById String
+  submittedBy   User           @relation(fields: [submittedById], references: [id])
+  role          PartyRole
+  serialNumber  String?
+  checklist     Json? // structured Q&A: powers on, cosmetic, accessories present...
+  notes         String?        @db.Text
+  createdAt     DateTime       @default(now())
+
+  media       ConditionMedia[]
+  checkoutFor ConditionComparison[] @relation("CheckoutReport")
+  returnFor   ConditionComparison[] @relation("ReturnReport")
+
+  @@unique([bookingId, phase, role]) // one report per party per phase
+  @@index([bookingId])
+}
+
+model ConditionMedia {
+  id         String          @id @default(cuid())
+  reportId   String
+  report     ConditionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  url        String
+  type       MediaType       @default(IMAGE)
+  label      MediaLabel      @default(OTHER)
+  width      Int?
+  height     Int?
+  capturedAt DateTime? // from EXIF where available
+  createdAt  DateTime        @default(now())
+
+  @@index([reportId])
+}
+
+/// Output of the automated checkout-vs-return comparison.
+model ConditionComparison {
+  id               String          @id @default(cuid())
+  bookingId        String
+  booking          Booking         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  checkoutReportId String
+  checkoutReport   ConditionReport @relation("CheckoutReport", fields: [checkoutReportId], references: [id])
+  returnReportId   String
+  returnReport     ConditionReport @relation("ReturnReport", fields: [returnReportId], references: [id])
+  damageDetected   Boolean         @default(false)
+  aiSummary        String?         @db.Text
+  findings         Json? // [{ label:"BACK", type:"scratch", confidence:0.82 }, ...]
+  createdAt        DateTime        @default(now())
+
+  @@index([bookingId])
+}
+
+// ---------------------------------------------------------------------------
+//  Reviews
+// ---------------------------------------------------------------------------
+
+model Review {
+  id            String          @id @default(cuid())
+  bookingId     String
+  booking       Booking         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  authorId      String
+  author        User            @relation("ReviewAuthor", fields: [authorId], references: [id])
+  subjectUserId String
+  subjectUser   User            @relation("ReviewSubject", fields: [subjectUserId], references: [id])
+  listingId     String?
+  listing       Listing?        @relation(fields: [listingId], references: [id])
+  direction     ReviewDirection
+
+  ratingOverall       Int
+  ratingCommunication Int?
+  ratingAccuracy      Int?
+  ratingCondition     Int?
+  ratingValue         Int?
+  wouldRentAgain      Boolean?
+  comment             String?  @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@unique([bookingId, authorId]) // one review per party per booking
+  @@index([subjectUserId])
+  @@index([listingId])
+}
+
+// ---------------------------------------------------------------------------
+//  Messaging
+// ---------------------------------------------------------------------------
+
+model MessageThread {
+  id        String   @id @default(cuid())
+  bookingId String?  @unique
+  booking   Booking? @relation(fields: [bookingId], references: [id])
+  listingId String?
+  listing   Listing? @relation(fields: [listingId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  participants ThreadParticipant[]
+  messages     Message[]
+
+  @@index([listingId])
+}
+
+model ThreadParticipant {
+  id         String        @id @default(cuid())
+  threadId   String
+  thread     MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastReadAt DateTime? // drives read receipts / unread counts
+
+  @@unique([threadId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id        String        @id @default(cuid())
+  threadId  String
+  thread    MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderId  String
+  sender    User          @relation(fields: [senderId], references: [id])
+  body      String        @db.Text
+  createdAt DateTime      @default(now())
+  editedAt  DateTime?
+
+  attachments MessageAttachment[]
+
+  @@index([threadId, createdAt])
+}
+
+model MessageAttachment {
+  id        String    @id @default(cuid())
+  messageId String
+  message   Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  url       String
+  type      MediaType @default(IMAGE)
+
+  @@index([messageId])
+}
+
+// ---------------------------------------------------------------------------
+//  Identity verification + central file registry
+// ---------------------------------------------------------------------------
+
+model IdentityVerification {
+  id              String               @id @default(cuid())
+  userId          String               @unique
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status          IdVerificationStatus @default(NOT_STARTED)
+  documentType    IdDocumentType?
+  documentFileId  String?
+  selfieFileId    String?
+  addressFileId   String?
+  provider        String? // e.g. "stripe_identity" | "manual"
+  providerRef     String?
+  reviewedById    String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UploadedFile {
+  id         String   @id @default(cuid())
+  uploaderId String
+  uploader   User     @relation(fields: [uploaderId], references: [id])
+  url        String
+  storageKey String   @unique
+  mimeType   String
+  sizeBytes  Int
+  kind       FileKind @default(OTHER)
+  width      Int?
+  height     Int?
+  checksum   String?
+  createdAt  DateTime @default(now())
+
+  @@index([uploaderId])
+  @@index([kind])
+}
+
+// ---------------------------------------------------------------------------
+//  Notifications + Wishlist
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String?          @db.Text
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt])
+}
+
+model WishlistItem {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId         String
+  listing           Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  priceDropAlert    Boolean  @default(true)
+  availabilityAlert Boolean  @default(true)
+  createdAt         DateTime @default(now())
+
+  @@unique([userId, listingId])
+  @@index([listingId])
+}
+
+// ---------------------------------------------------------------------------
+//  Rental agreement (digital contract)
+// ---------------------------------------------------------------------------
+
+model RentalAgreement {
+  id                  String    @id @default(cuid())
+  bookingId           String    @unique
+  booking             Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  version             Int       @default(1)
+  contentHtml         String    @db.Text
+  pdfFileId           String?
+  renterSignatureName String?
+  ownerSignatureName  String?
+  renterSignedAt      DateTime?
+  ownerSignedAt       DateTime?
+  createdAt           DateTime  @default(now())
+}
+
+// ---------------------------------------------------------------------------
+//  Disputes
+// ---------------------------------------------------------------------------
+
+model Dispute {
+  id              String             @id @default(cuid())
+  bookingId       String             @unique
+  booking         Booking            @relation(fields: [bookingId], references: [id])
+  raisedById      String
+  raisedBy        User               @relation("DisputeRaiser", fields: [raisedById], references: [id])
+  reason          DisputeReason
+  description     String             @db.Text
+  status          DisputeStatus      @default(OPEN)
+  resolution      DisputeResolution?
+  resolutionNotes String?            @db.Text
+  amountCents     Int? // amount moved as part of resolution
+  resolvedById    String?
+  resolvedAt      DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  evidence DisputeEvidence[]
+
+  @@index([status])
+}
+
+model DisputeEvidence {
+  id            String   @id @default(cuid())
+  disputeId     String
+  dispute       Dispute  @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  submittedById String
+  submittedBy   User     @relation(fields: [submittedById], references: [id])
+  url           String
+  note          String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  @@index([disputeId])
+}
+
+// ---------------------------------------------------------------------------
+//  Audit log
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String // e.g. "listing.remove", "user.suspend", "dispute.resolve"
+  entityType String
+  entityId   String
+  meta       Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+}
