@@ -19,6 +19,7 @@ import { prisma } from "@/lib/prisma";
 import { quoteRental } from "@/lib/money";
 import { generateBookingCode } from "@/lib/utils";
 import { stripe } from "@/lib/stripe";
+import { ensureStripeCustomer } from "@/server/stripe-invoicing";
 import { Prisma } from "@prisma/client";
 
 export const createBookingSchema = z
@@ -147,27 +148,44 @@ export async function createBooking(renterId: string, raw: CreateBookingInput) {
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
 
+  // Every renter needs a Stripe Customer so receipts, saved cards and invoices
+  // work (fixes the gap the code review flagged).
+  const customerId = await ensureStripeCustomer(renterId);
+
   // Rental charge held in escrow (captured now, transferred on completion).
-  const rentalIntent = await stripe.paymentIntents.create({
-    amount: quote.rentalSubtotalCents + quote.platformFeeCents + quote.deliveryFeeCents + quote.taxCents,
-    currency: quote.currency.toLowerCase(),
-    customer: renter.stripeCustomerId ?? undefined,
-    capture_method: "automatic",
-    transfer_group: booking.code,
-    metadata: { bookingId: booking.id, kind: "rental" },
-  });
+  // Idempotency key keyed on the booking id so a retried request can't double
+  // charge — Stripe returns the original PaymentIntent instead.
+  const rentalIntent = await stripe.paymentIntents.create(
+    {
+      amount:
+        quote.rentalSubtotalCents + quote.platformFeeCents + quote.deliveryFeeCents + quote.taxCents,
+      currency: quote.currency.toLowerCase(),
+      customer: customerId,
+      capture_method: "automatic",
+      transfer_group: booking.code,
+      metadata: { bookingId: booking.id, kind: "rental" },
+    },
+    { idempotencyKey: `rental:${booking.id}` },
+  );
 
   // Deposit as an authorisation hold (manual capture) — money isn't taken
   // unless damage is charged after return.
+  //
+  // NOTE: card authorisations expire after ~7 days. For rentals longer than
+  // that, re-authorise the hold before it lapses (a scheduled job that voids
+  // and re-creates this PaymentIntent) — tracked as the deposit-hold timing fix.
   const depositIntent =
     quote.depositCents > 0
-      ? await stripe.paymentIntents.create({
-          amount: quote.depositCents,
-          currency: quote.currency.toLowerCase(),
-          customer: renter.stripeCustomerId ?? undefined,
-          capture_method: "manual",
-          metadata: { bookingId: booking.id, kind: "deposit" },
-        })
+      ? await stripe.paymentIntents.create(
+          {
+            amount: quote.depositCents,
+            currency: quote.currency.toLowerCase(),
+            customer: customerId,
+            capture_method: "manual",
+            metadata: { bookingId: booking.id, kind: "deposit" },
+          },
+          { idempotencyKey: `deposit:${booking.id}` },
+        )
       : null;
 
   await prisma.$transaction([

@@ -58,14 +58,14 @@ revio/
 │  │  ├─ ui/               # shadcn primitives (button, card, badge, dialog…)
 │  │  ├─ listing-card.tsx  # ✅ design-system reference component
 │  │  ├─ search-bar.tsx    # ⛔ scaffold
-│  │  ├─ booking-widget.tsx# ⛔ scaffold
+│  │  ├─ booking-widget.tsx# ✅ Stripe Elements checkout (dates → pay)
 │  │  ├─ condition-capture.tsx # ⛔ scaffold (before/after uploader)
 │  │  └─ id-verification-wizard.tsx # ⛔ scaffold
 │  ├─ lib/
 │  │  ├─ prisma.ts         # ✅ client singleton
 │  │  ├─ money.ts          # ✅ pricing/fee/quote logic
 │  │  ├─ stripe.ts         # ✅ server client
-│  │  ├─ auth.ts           # ⛔ Auth.js config (providers, callbacks)
+│  │  ├─ auth.ts           # ✅ Auth.js config (Prisma adapter, Credentials + Google)
 │  │  └─ utils.ts          # ✅ cn(), slugify(), booking codes
 │  └─ server/
 │     ├─ booking-service.ts# ✅ escrow booking flow (validated, atomic)
@@ -132,17 +132,25 @@ validated. A few decisions worth knowing:
 
 ## Build roadmap
 
-Recommended order to take this from skeleton to launchable MVP:
+Progress from skeleton to launchable MVP:
 
-1. **Auth** — wire `src/lib/auth.ts` with the Prisma adapter, credentials +
-   Google + Apple, email verification via Resend, password reset. *(~1 wk)*
-2. **Listings CRUD + uploads** — create/edit listings, image upload to
-   Supabase/S3, the `search-bar` and filters against Postgres. *(~1–2 wks)*
-3. **Booking + Stripe** — finish `booking-service`, add the Stripe webhook
-   handler (`/api/webhooks/stripe`) to move `Payment`/`Deposit` states, Connect
-   onboarding + payouts on completion. *(~2 wks)*
-4. **Identity verification** — Stripe Identity flow + the manual review queue in
-   admin; gate listing/booking on `profile.identityVerified`. *(~1 wk)*
+1. ✅ **Auth** — `src/lib/auth.ts` wired with the Prisma adapter, Credentials +
+   Google, JWT sessions carrying user id + role, sign-in/sign-up pages, and edge
+   middleware protecting `/dashboard`, `/sell`, `/bookings`, `/account`.
+   *(Apple, email verification and password reset still to add.)*
+2. ✅ **Listings CRUD + uploads** — create/edit listings via server actions,
+   image upload to Supabase Storage (`/api/upload`, with a URL-paste fallback
+   when storage isn't configured), and search/filter against Postgres
+   (`/search`).
+3. ✅ **Booking + Stripe** — booking/checkout UI with Stripe Elements
+   (`booking-widget` → `/api/checkout`), the webhook handler at
+   `/api/stripe/webhook` moving `Payment`/`Deposit` states, and Connect payout
+   onboarding from the dashboard. Idempotency keys + a Stripe Customer per
+   renter are folded into `booking-service`.
+4. ⛔ **Identity verification** — Stripe Identity flow + the manual review queue in
+   admin; gate listing/booking on `profile.identityVerified`. *(A manual
+   `verifyIdentityStub` placeholder exists on `/account` so the booking loop is
+   demoable end-to-end in test mode.)* *(~1 wk)*
 5. **Condition verification** — the before/after capture UI, media upload, and
    the comparison job (start with a manual diff; add the AI vision pass later).
    *(~2 wks)*
@@ -166,7 +174,7 @@ Recommended order to take this from skeleton to launchable MVP:
 2. Add all `.env.example` variables in Project → Settings → Environment Variables.
 3. Set the build command to `prisma generate && next build`.
 4. Add a Vercel Postgres/Supabase/Neon database and run `prisma migrate deploy`.
-5. Point Stripe webhooks at `https://your-domain/api/webhooks/stripe`.
+5. Point Stripe webhooks at `https://your-domain/api/stripe/webhook`.
 
 ---
 
