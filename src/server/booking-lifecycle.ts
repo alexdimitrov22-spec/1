@@ -100,3 +100,26 @@ export async function captureDeposit(bookingId: string, amountToCaptureCents: nu
     }),
   ]);
 }
+
+/**
+ * Damaged return: capture the agreed amount from the deposit hold (Stripe
+ * auto-releases the uncaptured remainder), then pay the owner their rental
+ * share out of escrow and mark the booking complete. Mirrors completeBooking
+ * but captures instead of releasing the deposit.
+ */
+export async function completeBookingWithDamage(bookingId: string, damageCents: number) {
+  await captureDeposit(bookingId, damageCents);
+
+  await payOutOwner(bookingId);
+
+  await prisma.$transaction([
+    prisma.payment.update({
+      where: { bookingId },
+      data: { status: "RELEASED", releasedAt: new Date() },
+    }),
+    prisma.booking.update({
+      where: { id: bookingId },
+      data: { status: "COMPLETED" },
+    }),
+  ]);
+}

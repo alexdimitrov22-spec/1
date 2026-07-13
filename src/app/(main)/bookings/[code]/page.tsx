@@ -7,6 +7,7 @@ import { auth } from "@/lib/auth";
 import { getBookingByCode } from "@/server/booking-queries";
 import { formatMoney } from "@/lib/money";
 import { BookingStatusBadge } from "@/components/booking-status";
+import { ReturnActions } from "@/components/return-actions";
 import { Button } from "@/components/ui/button";
 
 export const metadata: Metadata = { title: "Your booking" };
@@ -101,6 +102,18 @@ export default async function BookingPage({
           )}
         </dl>
       </div>
+
+      {/* Owner return-flow controls */}
+      {!isRenter && (
+        <div className="mt-6">
+          <ReturnActions
+            bookingId={booking.id}
+            status={booking.status}
+            depositCents={booking.depositCents}
+            currency={booking.currency}
+          />
+        </div>
+      )}
 
       <div className="mt-6 flex flex-wrap gap-3">
         <Button asChild variant="outline">
